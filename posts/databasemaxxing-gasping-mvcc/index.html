@@ -19,13 +19,13 @@
 
     
         
-            <meta property="og:description" content="I&#x27;ve been working with DynamoDB for so long that I&#x27;d say I&#x27;ve forgotten a lot on what it&#x27;s like to work with relational databases (never mind managing them in production). DynamoDB is a..." />
+            <meta property="og:description" content="The core idea behind MVCC is to allow readers and writers to operate concurrently without unnecessarily blocking each other, which is achieved by versioning rows. Readers can see a..." />
         
     
 
     
         
-            <meta name="description" content="I&#x27;ve been working with DynamoDB for so long that I&#x27;d say I&#x27;ve forgotten a lot on what it&#x27;s like to work with relational databases (never mind managing them in production). DynamoDB is a..." />
+            <meta name="description" content="The core idea behind MVCC is to allow readers and writers to operate concurrently without unnecessarily blocking each other, which is achieved by versioning rows. Readers can see a..." />
         
     
 
@@ -110,13 +110,19 @@
         
 
         <section class="body">
-            <p>I've been working with DynamoDB for so long that I'd say I've forgotten a lot on what it's like to work with relational databases (never mind managing them in production). DynamoDB is a gorgeous database for how much brilliant engineering is abstracting away a lot of things that lets you focus on your business requirements.</p>
-<p>As I've now finished CMU's lecture content, I'm starting to now try put what I've seen into writing to help solidify the concepts, and with this post, it's on MVCC (with the main focus on READ COMMITTED).</p>
+            <p>The core idea behind MVCC is to allow readers and writers to operate concurrently without unnecessarily blocking each other, which is achieved by versioning rows. Readers can see a consistent snapshot of the data whilst writers create new versions of it, avoiding the need to block and wait. If you have used SQLite, you'll know that it's single writer, whereas Turso in its re-write of SQLite has supporting MVCC as a goal.</p>
 <p>Isolation levels in MVCC are particularly fascinating due to a "mix 'n' max" approach you could take with them based on your business problems. Postgres for example defaults to read committed as its base isolation level unless explicitly specified. I was although surprised Postgres doesn't have READ UNCOMMITTED due to the pain of implementing it which is totally understandable.</p>
+<h1 id="isolation-levels">Isolation levels</h1>
+<ul>
+<li>READ UNCOMMITTED -&gt; allows reading uncommitted changes made by another transaction</li>
+<li>READ COMMITTED -&gt; only allows committed changes to be read. Subsequent statements within the same transaction can see changes committed by other transactions</li>
+<li>REPEATABLE READ -&gt; re-reading rows gives the same view within the transaction even if another transaction modified it</li>
+<li>SERIALIZABLE -&gt; guarantees that the outcome of concurrently executing transactions is equivalent to some serial execution of those transactions</li>
+</ul>
 <p>What's interesting about READ COMMITTED is that it's totally a reasonable default since not many applications would care for a lot of the 'problems' that it can't save you from such as inconsistent snapshots across concurrently running transactions, thus it exposes a lot more performance than the REPEATABLE READ and SERIALISABLE levels.</p>
 <p>Good defaults in production would be a must and tuned to your own needs, especially around lock timeouts. I haven't looked but I bet there's some good reads on how to measure this.</p>
 <p><img src="https://ptrtojoel.dev/posts/databasemaxxing-gasping-mvcc/lock-stalling.png" alt="" /></p>
-<p>With defaults (locks at 0s) two competing transactions looking to update the same row with have lock contention, resulting in one winning and doing its work whilst the other halts once its update command was submitted and must wait for the row lock to be acquirable.</p>
+<p>With defaults two competing transactions looking to update the same row will have lock contention, resulting in one winning and doing its work whilst the other halts once its update command was submitted and must wait for the row lock to be acquirable.</p>
 <p>An interesting note here that I learnt from Postgres is that once the transaction can do its update, Postgres will re-check the predicate(s) to ensure that they aren't violated</p>
 <p><img src="https://ptrtojoel.dev/posts/databasemaxxing-gasping-mvcc/stalling.png" alt="" /></p>
 <p>Now let's say we have some lock timeouts configured based on our requirements, this is where things get interesting and what you'd want to pay special attention to.</p>
@@ -129,6 +135,10 @@
 <p>The other two locks are purely focused on how the database handles its own lock contention across competing transactions, which is also something that can occur at any isolation level (especially the deadlock one!!!!!!).</p>
 <p><img src="https://ptrtojoel.dev/posts/databasemaxxing-gasping-mvcc/skew.png" alt="" /></p>
 <p>Read skew and write skew are another two cool problems that aren't exactly the fault of the database and require careful consideration around what you're doing with N row updates that could concurrently occur.</p>
+<ul>
+<li>Read skew: a transaction observes data from inconsistent points in time, potentially seeing a combination of values that never existed together in a consistent database state</li>
+<li>Write skew: two concurrent transactions independently make valid decisions based on their snapshots, but their combined writes violate a business constraint</li>
+</ul>
 <p>If we think about what is going on with read skew, we're doing a SELECT (no exclusive lock on the rows) and then making our changes. The time between Txn A and Txn B's reads and the first write by Txn A can create an inconsistent view of the data from Txn B's perspective.</p>
 <p>This is where you'd want to start bumping up the isolation level to REPEATABLE READ so that Txn B has a consistent snapshot regardless of when Txn A commits. It's perfectly reasonable to only set the isolation level for your transactions only that may be impacted by read skew.</p>
 <p>Write skew is unescapable since it's a business level problem (at heart) that the database can only save you from at the highest isolation level.  My example is very simple (A or B must be 1) and if anything, READ COMMITTED could theoretically stop it in a race condition sorta way if Txn A commits before Txn B's reads but I wouldn't gamble on that. REPEATABLE READ is going to be exposed, and SERIALISABLE will detect it through the dependency graph.</p>
